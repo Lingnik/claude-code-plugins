@@ -192,12 +192,32 @@ FAKE_PW = "Zr8Kq2" + "Lm9Vx4Tn7Wp3Bd"
     f"redis://:{FAKE_PW}@/tmp/redis.sock",
     f"mongodb+srv://u:{FAKE_PW}@cluster0.example.net",
     f"postgres://u:{FAKE_PW}@[::1]:5432/db",
+    f"postgres://app:${FAKE_PW}@db/app",
+    f"postgres://app:{{{FAKE_PW}@db/app",
+    f'{{"url":"postgres:\\/\\/u:{FAKE_PW}@h\\/db"}}',
 ])
 def test_connection_string_password_is_redacted(shapes, url):
     text, rules = shapes.redact_text(url)
     assert FAKE_PW not in text
     assert "connection-string-password" in rules
-    assert "@" in text and "://" in text
+    assert "@" in text
+
+
+@pytest.mark.parametrize("line", [
+    f"DBS=postgres://u:${{A}}@h1/db,postgres://u:{FAKE_PW}@h2/db",
+    f"postgres://u:${{A}}@h1;postgres://u:{FAKE_PW}@h2",
+    f"postgres://u:pw1secret@h1/db,postgres://u2:{FAKE_PW}@h2/db",
+])
+def test_second_url_on_a_line_is_checked(shapes, line):
+    text, _ = shapes.redact_text(line)
+    assert FAKE_PW not in text
+    assert "@h2" in text and "h1" in text
+
+
+@pytest.mark.parametrize("url", ["redis://:83920@redis.internal:6379", "postgres://app:83920@db/app"])
+def test_short_numeric_password_is_redacted(shapes, url):
+    text, rules = shapes.redact_text(url)
+    assert "83920" not in text and "connection-string-password" in rules
 
 
 def test_password_with_at_signs_is_fully_redacted(shapes):
@@ -214,6 +234,10 @@ def test_password_with_at_signs_is_fully_redacted(shapes):
     "postgres://u:xxx@db/app",
     "postgres://u:changeme@db/app",
     "postgresql://user:<password>@host",
+    "postgres://app:$DB_PASSWORD@db/app",
+    "postgres://app:{{ db_password }}@db/app",
+    "postgres://app:%(password)s@db/app",
+    "postgres://u:[redacted: generic-api-key]@db/app",
 ])
 def test_placeholder_passwords_pass(shapes, placeholder):
     text, rules = shapes.redact_text(placeholder)
@@ -238,15 +262,20 @@ def test_connection_string_keeps_user_and_host(shapes):
     "http://[fe80::1%eth0]:80@x",
     "docker://registry:5000@sha256:abcd",
     "https://registry.npmjs.org:443/@scope/pkg",
+    "docker-image://alpine:3.18@sha256:abcd",
+    "docker-image://alpine:latest@sha256:abcd",
 ])
 def test_urls_without_a_password_pass(shapes, plain):
     text, rules = shapes.redact_text(plain)
     assert text == plain and not rules
 
 
-def test_connection_string_rule_is_linear_on_long_tokens(shapes):
+@pytest.mark.parametrize("text", [
+    "ab://x:yyy" * 100_000,
+    ("a." * 15 + "a://:") * 30_000,
+])
+def test_connection_string_rule_is_linear_on_long_tokens(shapes, text):
     import time
-    text = "ab://x:yyy" * 100_000
     start = time.time()
     shapes.redact_text(text)
     assert time.time() - start < 5

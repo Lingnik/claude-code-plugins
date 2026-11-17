@@ -6,9 +6,15 @@ A Claude Code plugin marketplace. It has one plugin so far.
 
 gitleaks-redact is a PostToolUse hook. It scans the output of the Bash, Read, Grep, WebFetch and MCP tools for secrets, and replaces each one with `[redacted: <rule id>]` before the model sees it. For example, an AWS access key in a `.env` file that Claude reads becomes `[redacted: aws-access-key]`.
 
-It uses the default rules from [gitleaks](https://github.com/gitleaks/gitleaks) v8.30.1, converted to Python, plus a few extra shapes for common services such as GitHub, Slack, AWS, Anthropic, 1Password, JWTs and PEM private keys. It also redacts the password in connection strings such as `postgresql://user:<password>@host` and `redis://:<password>@host`, leaving the scheme, user and host readable. It leaves obvious placeholders alone: a password equal to the user name, `password`, `changeme`, `****`, or template syntax such as `${DB_PASSWORD}` and `{password}`.
+It uses the default rules from [gitleaks](https://github.com/gitleaks/gitleaks) v8.30.1, converted to Python, plus a few extra shapes for common services such as GitHub, Slack, AWS, Anthropic, 1Password, JWTs and PEM private keys. It also redacts the password in connection strings such as `postgresql://user:<password>@host` and `redis://:<password>@host`, leaving the scheme, user and host readable. It leaves obvious placeholders alone:
 
-The hook returns the redacted output in the same shape as the tool's original output. If redaction would change that shape, or the hook itself crashes while scanning, it withholds the output instead: every string in it is replaced with a notice. Two failures still let the original output through: input the hook cannot parse as JSON, and a scan that runs past the hook's 30-second timeout.
+- a password equal to the user name;
+- the words `password`, `passwd`, `pass`, `pwd`, `secret`, `changeme`, `example` and `redacted`, in any case;
+- values made only of `*`, `x`, `X` and `.`;
+- whole-value templates such as `${DB_PASSWORD}`, `$DB_PASSWORD`, `{password}`, `{{ password }}`, `%(password)s` and `<password>`;
+- image digests such as `alpine:3.18@sha256:...`.
+
+The hook returns the redacted output in the same shape as the tool's original output. If redaction would change that shape, or the hook itself crashes while scanning, it withholds the output instead: every string in it is replaced with a notice. Three failures still let the original output through: input the hook cannot parse as JSON, JSON nested too deeply for Python's parser, and a scan that runs past the hook's 30-second timeout.
 
 Each time it redacts or withholds output, the hook also gives the model a short note (`additionalContext`). The note names the rules that matched and tells the model three things:
 
@@ -40,7 +46,11 @@ The hook writes no log by default. To get one, set `GITLEAKS_REDACT_LOG` to a fi
 - It covers only the Bash, Read, Grep, WebFetch and MCP tools. Output from any other tool passes through untouched, and so do images.
 - Regular expressions miss things. A secret in an unusual format, split across lines or encoded will get through. Treat this as defense in depth, not a guarantee, and keep secrets out of places Claude can read.
 - It can also redact things that are not secrets, such as long random-looking strings next to words like `key` or `token`, or the text between `:` and `@` in an unusual URL such as `s3://bucket:prefix@x`.
-- Connection-string passwords that contain `?`, `#`, a quote or whitespace, or that run past 256 characters, are not redacted.
+- Some connection-string passwords are not redacted:
+    - passwords that contain `?`, `#`, `<`, `>`, a quote or whitespace, or that run past 256 characters;
+    - passwords that start with up to five digits followed by `/`, `,`, `;`, `)` or `]`, which read as a port;
+    - passwords whose user name runs past 128 characters or contains `,;()[]'"<>`.
+- Keys in JSON objects are not scanned, only values.
 
 ### Tests
 
