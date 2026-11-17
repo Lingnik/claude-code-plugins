@@ -156,8 +156,19 @@ def test_withheld_output_tells_the_model(hook, monkeypatch):
     monkeypatch.setattr(hook, "_shapes", boom)
     result, _ = run(hook, {"tool_name": "Read", "tool_response": TOOL_SHAPES["Read"](FAKE_AWS)})
     text = context(result)
-    assert "withheld this entire Read output" in text
-    assert "status: failed" in text and "hook-error" in text
+    assert "failed while scanning this Read output" in text
+    assert "It may hold no secret" in text
+    assert "exposed a secret" not in text
+
+
+def test_notice_error_falls_back(hook, monkeypatch):
+    def broken(*_):
+        raise RuntimeError("simulated failure")
+
+    monkeypatch.setattr(hook, "notice", broken)
+    result, _ = run(hook, {"tool_name": "Bash", "tool_response": TOOL_SHAPES["Bash"](FAKE_AWS)})
+    assert context(result) == hook.NOTICE_FALLBACK
+    assert FAKE_AWS not in json.dumps(result)
 
 
 def test_clean_output_adds_no_context(hook):
@@ -174,12 +185,39 @@ FAKE_PW = "Zr8Kq2" + "Lm9Vx4Tn7Wp3Bd"
     f"REDIS_URL=redis://:{FAKE_PW}@redis.example.internal:6379",
     f"amqps://guest:{FAKE_PW}@mq.example.internal/vhost",
     f'{{"url": "mysql://root:{FAKE_PW}@db:3306/x"}}',
+    f"postgres://u:ab/{FAKE_PW}+/=@host/db",
+    f"postgres://u:{FAKE_PW}@x@host/db",
+    f"postgres://u:ab@cd{FAKE_PW}@host/db",
+    f"postgres://u:{FAKE_PW}@/db?host=/var/run/pg",
+    f"redis://:{FAKE_PW}@/tmp/redis.sock",
+    f"mongodb+srv://u:{FAKE_PW}@cluster0.example.net",
+    f"postgres://u:{FAKE_PW}@[::1]:5432/db",
 ])
 def test_connection_string_password_is_redacted(shapes, url):
     text, rules = shapes.redact_text(url)
     assert FAKE_PW not in text
     assert "connection-string-password" in rules
     assert "@" in text and "://" in text
+
+
+def test_password_with_at_signs_is_fully_redacted(shapes):
+    text, _ = shapes.redact_text(f"postgres://u:{FAKE_PW}@x@host/db")
+    assert text == "postgres://u:[redacted: connection-string-password]@host/db"
+
+
+@pytest.mark.parametrize("placeholder", [
+    "postgres://postgres:postgres@localhost:5432/app",
+    "postgres://user:password@localhost/app",
+    "postgres://app:${DB_PASSWORD}@db/app",
+    "postgresql://{user}:{password}@{host}:{port}/{db}",
+    "postgres://u:****@db/app",
+    "postgres://u:xxx@db/app",
+    "postgres://u:changeme@db/app",
+    "postgresql://user:<password>@host",
+])
+def test_placeholder_passwords_pass(shapes, placeholder):
+    text, rules = shapes.redact_text(placeholder)
+    assert text == placeholder and "connection-string-password" not in rules
 
 
 def test_connection_string_keeps_user_and_host(shapes):
@@ -192,7 +230,23 @@ def test_connection_string_keeps_user_and_host(shapes):
     "https://user@example.com/repo.git",
     "ssh://git@github.com:22/org/repo.git",
     "see http://example.com:8080/ for details",
+    "curl http://host:8080?next=a@b.com",
+    "http://example.com:8080#frag@x",
+    "GET http://api:9000;user=a@b.com",
+    "http://localhost:3000,admin@example.com",
+    "[link](http://localhost:3000)@foo",
+    "http://[fe80::1%eth0]:80@x",
+    "docker://registry:5000@sha256:abcd",
+    "https://registry.npmjs.org:443/@scope/pkg",
 ])
 def test_urls_without_a_password_pass(shapes, plain):
     text, rules = shapes.redact_text(plain)
     assert text == plain and not rules
+
+
+def test_connection_string_rule_is_linear_on_long_tokens(shapes):
+    import time
+    text = "ab://x:yyy" * 100_000
+    start = time.time()
+    shapes.redact_text(text)
+    assert time.time() - start < 5

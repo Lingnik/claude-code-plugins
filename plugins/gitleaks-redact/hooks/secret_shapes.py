@@ -25,13 +25,7 @@ def hooks_dir():
 # Extra shapes for public services and standard formats that gitleaks's
 # default rules miss or match only next to a keyword. Each entry is
 # (rule id, compiled regex, lowercase keywords that must appear in the text).
-# When a regex has a capture group, only the first group that matched is
-# redacted, so the rest of the match stays readable.
 EXTRA_SHAPES = [
-    # The password in a URL's userinfo, e.g. postgresql://user:<password>@host
-    # or redis://:<password>@host. The scheme, user and host stay visible.
-    ("connection-string-password", re.compile(
-        r"\b[A-Za-z][A-Za-z0-9+.-]{1,30}://[^\s/:@'\"<>]*:([^\s/@'\"<>]{3,})@[^\s/@'\"<>]"), ("://",)),
     ("1password-service-account", re.compile(r"ops_[A-Za-z0-9_-]{20,}"), ("ops_",)),
     ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"), ("ghp_", "gho_", "ghu_", "ghs_", "ghr_")),
     ("github-pat", re.compile(r"github_pat_[A-Za-z0-9_]{40,}"), ("github_pat_",)),
@@ -43,6 +37,31 @@ EXTRA_SHAPES = [
     ("aws-access-key", re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"), ("akia", "asia")),
     ("slack-token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"), ("xox",)),
 ]
+
+
+# The password in a URL's userinfo, such as postgresql://user:<password>@host,
+# redis://:<password>@host or postgres://user:<password>@/db?host=/run/pg.
+# Only the password (group 2) is redacted; the scheme, user and host stay
+# readable. The password runs to the last "@" before whitespace, so it may
+# hold "/" or an unescaped "@". A colon followed by up to five digits and
+# then a URL delimiter is a port, not a password. The user and password
+# lengths are capped so the search stays linear on long tokens.
+CONNECTION_STRING = re.compile(
+    r"\b[A-Za-z][A-Za-z0-9+.-]{1,30}://"
+    r"([^\s:@/?#\[\]'\"<>,;()]{0,128})"
+    r":(?!\d{1,5}(?:[/@,;)\]?#\s]|$))"
+    r"([^\s?#'\"<>]{1,256})@")
+
+PLACEHOLDER_PASSWORDS = {"password", "passwd", "pass", "pwd", "secret", "changeme", "example", "redacted"}
+
+
+def placeholder_password(m):
+    """True when a connection-string password is a placeholder, not a secret."""
+    user, pw = m.group(1), m.group(2)
+    return (pw == user
+            or pw.lower() in PLACEHOLDER_PASSWORDS
+            or pw.startswith(("$", "{", "%(", "<", "[redacted"))
+            or set(pw) <= set("*xX."))
 
 
 def _load_gitleaks():
@@ -76,11 +95,12 @@ def strip_lead(source):
 
 
 class Rule:
-    __slots__ = ("id", "source", "keywords", "entropy", "group", "allowlists", "extra", "lead", "_rx")
+    __slots__ = ("id", "source", "keywords", "entropy", "group", "allowlists", "extra", "skip", "lead", "_rx")
 
-    def __init__(self, rid, source, keywords, entropy=0.0, group=0, allowlists=(), extra=False):
+    def __init__(self, rid, source, keywords, entropy=0.0, group=0, allowlists=(), extra=False, skip=None):
         self.id, self.source, self.keywords = rid, source, keywords
         self.entropy, self.group, self.allowlists, self.extra = entropy, group, allowlists, extra
+        self.skip = skip
         self._rx = source if isinstance(source, re.Pattern) else None
         self.lead = 0
 
@@ -92,7 +112,10 @@ class Rule:
         return self._rx
 
 
-RULES = [Rule(*r) for r in _GL.RULES] + [Rule(rid, src, kw, extra=True) for rid, src, kw in EXTRA_SHAPES]
+RULES = ([Rule(*r) for r in _GL.RULES]
+         + [Rule(rid, src, kw, extra=True) for rid, src, kw in EXTRA_SHAPES]
+         + [Rule("connection-string-password", CONNECTION_STRING, ("://",), group=2, extra=True,
+                 skip=placeholder_password)])
 _GLOBAL_STOPWORDS = _GL.GLOBAL_ALLOWLIST["stopwords"]
 _GLOBAL = []
 
@@ -151,6 +174,8 @@ def _finds(rule, text):
         elif m.re.groups:
             span = next((m.span(g) for g in range(1, m.re.groups + 1) if m.group(g)), span)
         if span[0] == span[1]:
+            continue
+        if rule.skip and rule.skip(m):
             continue
         secret = text[span[0]:span[1]]
         if not rule.extra:

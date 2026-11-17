@@ -32,19 +32,34 @@ LOG_MAX_BYTES = 5_000_000
 WITHHELD = "[withheld: the gitleaks-redact hook failed, so this output was not shown]"
 
 
+NOTICE_FALLBACK = ("gitleaks-redact changed or withheld this tool output. Do not try to recover "
+                   "hidden values, and do not write placeholder text back to a file.")
+
+
 def notice(tool, rules, status):
     """The message the model gets next to redacted or withheld output."""
+    if status == "failed":
+        return (f"gitleaks-redact failed while scanning this {tool} output, so it withheld the "
+                "whole output. It may hold no secret. Rerun the command if you need the output, "
+                "and tell the user if the hook keeps failing.")
     ids = ", ".join(sorted(set(rules)))
     if status == "redacted":
         what = (f"gitleaks-redact replaced {len(rules)} secret value(s) in this {tool} output "
                 f"with [redacted: <rule id>] placeholders (rules: {ids}).")
     else:
         what = (f"gitleaks-redact withheld this entire {tool} output because it could not "
-                f"redact it safely (status: {status}; rules: {ids}).")
+                f"redact it safely (rules: {ids}).")
     return (what + " Do not try to recover the values with other commands, encodings or partial "
             "reads. Do not write the redacted text back to a file: the placeholders would replace "
             "the real values. Tell the user which tool call exposed a secret, so they can decide "
             "whether to rotate it.")
+
+
+def safe_notice(tool, rules, status):
+    try:
+        return notice(tool, rules, status)
+    except Exception:
+        return NOTICE_FALLBACK
 
 
 def hooks_dir():
@@ -171,7 +186,7 @@ def main(stdin=None, stdout=None, stderr=None):
     stdout.write(json.dumps({"hookSpecificOutput": {
         "hookEventName": "PostToolUse",
         "updatedToolOutput": value,
-        "additionalContext": notice(tool, rules, status),
+        "additionalContext": safe_notice(tool, rules, status),
     }}) + "\n")
     return 0
 
