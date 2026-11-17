@@ -1,0 +1,13 @@
+{
+  "name": "lingnik",
+  "owner": {
+    "name": "Taylor Meek"
+  },
+  "plugins": [
+    {
+      "name": "gitleaks-redact",
+      "source": "./plugins/gitleaks-redact",
+      "description": "Redacts secrets from Bash, Read, Grep, WebFetch and MCP tool output before the model sees it, using the gitleaks default rules."
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "gitleaks-redact",
+  "version": "0.1.0",
+  "description": "Redacts secrets from Bash, Read, Grep, WebFetch and MCP tool output before the model sees it, using the gitleaks v8.30.1 default rules.",
+  "author": {
+    "name": "Taylor Meek"
+  },
+  "license": "MIT",
+  "keywords": ["security", "secrets", "redaction", "gitleaks", "hooks"]
+}
