@@ -6,9 +6,15 @@ A Claude Code plugin marketplace. It has one plugin so far.
 
 gitleaks-redact is a PostToolUse hook. It scans the output of the Bash, Read, Grep, WebFetch and MCP tools for secrets, and replaces each one with `[redacted: <rule id>]` before the model sees it. For example, an AWS access key in a `.env` file that Claude reads becomes `[redacted: aws-access-key]`.
 
-It uses the default rules from [gitleaks](https://github.com/gitleaks/gitleaks) v8.30.1, converted to Python, plus a few extra shapes for common services such as GitHub, Slack, AWS, Anthropic, 1Password, JWTs and PEM private keys.
+It uses the default rules from [gitleaks](https://github.com/gitleaks/gitleaks) v8.30.1, converted to Python, plus a few extra shapes for common services such as GitHub, Slack, AWS, Anthropic, 1Password, JWTs and PEM private keys. It also redacts the password in connection strings such as `postgresql://user:<password>@host` and `redis://:<password>@host`, leaving the scheme, user and host readable.
 
 The hook returns the redacted output in the same shape as the tool's original output. If redaction would change that shape, or the hook itself crashes, it withholds the output instead: every string in it is replaced with a notice. It fails closed, not open.
+
+Each time it redacts or withholds output, the hook also gives the model a short note (`additionalContext`). The note names the rules that matched and tells the model three things:
+
+- Do not try to recover the values with other commands, encodings or partial reads.
+- Do not write the redacted text back to a file, since the placeholders would replace the real values.
+- Tell the user which tool call exposed a secret, so they can decide whether to rotate it.
 
 ### Install
 

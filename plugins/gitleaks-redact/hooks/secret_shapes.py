@@ -25,7 +25,13 @@ def hooks_dir():
 # Extra shapes for public services and standard formats that gitleaks's
 # default rules miss or match only next to a keyword. Each entry is
 # (rule id, compiled regex, lowercase keywords that must appear in the text).
+# When a regex has a capture group, only the first group that matched is
+# redacted, so the rest of the match stays readable.
 EXTRA_SHAPES = [
+    # The password in a URL's userinfo, e.g. postgresql://user:<password>@host
+    # or redis://:<password>@host. The scheme, user and host stay visible.
+    ("connection-string-password", re.compile(
+        r"\b[A-Za-z][A-Za-z0-9+.-]{1,30}://[^\s/:@'\"<>]*:([^\s/@'\"<>]{3,})@[^\s/@'\"<>]"), ("://",)),
     ("1password-service-account", re.compile(r"ops_[A-Za-z0-9_-]{20,}"), ("ops_",)),
     ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"), ("ghp_", "gho_", "ghu_", "ghs_", "ghr_")),
     ("github-pat", re.compile(r"github_pat_[A-Za-z0-9_]{40,}"), ("github_pat_",)),
