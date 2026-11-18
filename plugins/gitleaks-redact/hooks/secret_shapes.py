@@ -39,6 +39,41 @@ EXTRA_SHAPES = [
 ]
 
 
+# The password in a URL's userinfo, such as postgresql://user:<password>@host,
+# redis://:<password>@host or postgres://user:<password>@/db?host=/run/pg.
+# JSON-escaped slashes (postgres:\/\/...) count too. Only the password
+# (group 2) is redacted; the scheme, user and host stay readable.
+#
+# The password runs to the last "@" within 256 characters that comes before
+# the next "://", so it may hold "/" or an unescaped "@", and two URLs on one
+# line stay separate. It stops at whitespace, "?", "#", quotes and "<>".
+# After a user name, a colon followed by up to five digits and then "/", ",",
+# ";", ")", "]", "?", "#", whitespace or the end is a port, not a password.
+# The user and password lengths are capped so the search stays linear.
+CONNECTION_STRING = re.compile(
+    r"\b[A-Za-z][A-Za-z0-9+.-]{1,30}:(?://|\\/\\/)"
+    r"([^\s:@/\\?#\[\]'\"<>,;()]{0,128})"
+    r":(?:(?<=//:)|(?<=\\/:)|(?!\d{1,5}(?:[/,;)\]?#\s]|$)))"
+    r"((?:(?!:(?://|\\/\\/))[^\s?#'\"<>]){1,256})@")
+
+PLACEHOLDER_PASSWORDS = {"password", "passwd", "pass", "pwd", "secret", "changeme", "example", "redacted"}
+
+# Whole-value template syntax: ${VAR}, $UPPER_CASE_VAR, {var}, {{ var }},
+# %(var)s, <var>, and this hook's own placeholder.
+TEMPLATE_PASSWORD = re.compile(
+    r"\$\{[A-Za-z_]\w*\}|\$[A-Z_][A-Z0-9_]*|\{\{?\s*[\w.]+\s*\}\}?|%\(\w+\)s|<[\w .-]+>|\[redacted: [\w-]+\]")
+
+
+def placeholder_password(m):
+    """True when a connection-string match is a placeholder or an image digest, not a secret."""
+    user, pw = m.group(1), m.group(2)
+    return (pw == user
+            or pw.lower() in PLACEHOLDER_PASSWORDS
+            or TEMPLATE_PASSWORD.fullmatch(pw) is not None
+            or set(pw) <= set("*xX.")
+            or m.string.startswith("sha256:", m.end()))
+
+
 def _load_gitleaks():
     path = os.path.join(hooks_dir(), "gitleaks_rules.py")
     spec = importlib.util.spec_from_file_location("gitleaks_redact_rules", path)
@@ -70,11 +105,12 @@ def strip_lead(source):
 
 
 class Rule:
-    __slots__ = ("id", "source", "keywords", "entropy", "group", "allowlists", "extra", "lead", "_rx")
+    __slots__ = ("id", "source", "keywords", "entropy", "group", "allowlists", "extra", "skip", "lead", "_rx")
 
-    def __init__(self, rid, source, keywords, entropy=0.0, group=0, allowlists=(), extra=False):
+    def __init__(self, rid, source, keywords, entropy=0.0, group=0, allowlists=(), extra=False, skip=None):
         self.id, self.source, self.keywords = rid, source, keywords
         self.entropy, self.group, self.allowlists, self.extra = entropy, group, allowlists, extra
+        self.skip = skip
         self._rx = source if isinstance(source, re.Pattern) else None
         self.lead = 0
 
@@ -86,7 +122,10 @@ class Rule:
         return self._rx
 
 
-RULES = [Rule(*r) for r in _GL.RULES] + [Rule(rid, src, kw, extra=True) for rid, src, kw in EXTRA_SHAPES]
+RULES = ([Rule(*r) for r in _GL.RULES]
+         + [Rule(rid, src, kw, extra=True) for rid, src, kw in EXTRA_SHAPES]
+         + [Rule("connection-string-password", CONNECTION_STRING, ("://", ":\\/\\/"), group=2, extra=True,
+                 skip=placeholder_password)])
 _GLOBAL_STOPWORDS = _GL.GLOBAL_ALLOWLIST["stopwords"]
 _GLOBAL = []
 
@@ -145,6 +184,8 @@ def _finds(rule, text):
         elif m.re.groups:
             span = next((m.span(g) for g in range(1, m.re.groups + 1) if m.group(g)), span)
         if span[0] == span[1]:
+            continue
+        if rule.skip and rule.skip(m):
             continue
         secret = text[span[0]:span[1]]
         if not rule.extra:
